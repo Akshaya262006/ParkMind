@@ -1,0 +1,22 @@
+
+node_modules/
+dist/
+
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local database
+backend/parkmind.db
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
