@@ -1,3 +1,6 @@
+
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -24,3 +27,10 @@ class ParkingSlotResponse(BaseModel):
     status: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ParkingSlotStatusUpdate(BaseModel):
+    status: Literal["VACANT", "RESERVED", "OCCUPIED"]
+class DemoSensorEvent(BaseModel):
+    slot_id: str
+    status: Literal["VACANT", "OCCUPIED"]
