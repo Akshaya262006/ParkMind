@@ -1,15 +1,16 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
+from core.auth_dependencies import get_current_user, require_roles
+from database.connection import get_db
 from models.parking_event import ParkingEvent
 from models.parking_slot import ParkingSlot
-
-from database.connection import get_db
 from schemas.parking import (
+    DemoSensorEvent,
     ParkingSlotResponse,
     ParkingSlotStatusUpdate,
     ParkingZoneResponse,
-    DemoSensorEvent,
 )
 from services.parking_service import (
     get_parking_status,
@@ -19,9 +20,12 @@ from services.parking_service import (
     update_slot_status,
 )
 
+# All parking endpoints require an authenticated user.
+# Individual write endpoints additionally require ADMIN.
 router = APIRouter(
     prefix="/parking",
     tags=["Parking"],
+    dependencies=[Depends(get_current_user)],
 )
 
 
@@ -65,9 +69,11 @@ def status(db: Session = Depends(get_db)):
     return get_parking_status(db)
 
 
+# ADMIN ONLY: manually change a parking slot's status.
 @router.patch(
     "/slots/{slot_id}/status",
     response_model=ParkingSlotResponse,
+    dependencies=[Depends(require_roles("ADMIN"))],
 )
 def update_status(
     slot_id: str,
@@ -90,7 +96,11 @@ def update_status(
     return result
 
 
-@router.post("/demo/sensor-event")
+# ADMIN ONLY: simulate a parking sensor event.
+@router.post(
+    "/demo/sensor-event",
+    dependencies=[Depends(require_roles("ADMIN"))],
+)
 def simulate_sensor_event(
     payload: DemoSensorEvent,
     db: Session = Depends(get_db),
@@ -115,6 +125,7 @@ def simulate_sensor_event(
         "status": result.status,
     }
 
+
 @router.get("/events")
 def get_parking_events(
     limit: int = 20,
@@ -123,7 +134,7 @@ def get_parking_events(
     events = (
         db.query(ParkingEvent)
         .order_by(ParkingEvent.id.desc())
-        .limit(limit)
+        .limit(max(1, min(limit, 100)))
         .all()
     )
 
@@ -139,6 +150,7 @@ def get_parking_events(
         for event in events
     ]
 
+
 @router.get("/analytics")
 def get_parking_analytics(
     db: Session = Depends(get_db),
@@ -147,9 +159,9 @@ def get_parking_analytics(
     events = db.query(ParkingEvent).all()
 
     total = len(slots)
-    vacant = sum(1 for slot in slots if slot.status == "VACANT")
-    occupied = sum(1 for slot in slots if slot.status == "OCCUPIED")
-    reserved = sum(1 for slot in slots if slot.status == "RESERVED")
+    vacant = sum(1 for item in slots if item.status == "VACANT")
+    occupied = sum(1 for item in slots if item.status == "OCCUPIED")
+    reserved = sum(1 for item in slots if item.status == "RESERVED")
 
     occupancy_percentage = (
         round((occupied / total) * 100, 2)
@@ -179,8 +191,11 @@ def get_parking_analytics(
         },
     }
 
+
 @router.get("/analytics/hourly-activity")
-def get_hourly_activity(db: Session = Depends(get_db)):
+def get_hourly_activity(
+    db: Session = Depends(get_db),
+):
     events = (
         db.query(ParkingEvent)
         .order_by(ParkingEvent.occurred_at.asc())
@@ -196,7 +211,7 @@ def get_hourly_activity(db: Session = Depends(get_db)):
         hour = event.occurred_at.replace(
             minute=0,
             second=0,
-            microsecond=0
+            microsecond=0,
         ).isoformat()
 
         hourly_counts[hour] = hourly_counts.get(hour, 0) + 1
@@ -205,8 +220,10 @@ def get_hourly_activity(db: Session = Depends(get_db)):
         "data_mode": "SIMULATED_DEMO",
         "total_events": sum(hourly_counts.values()),
         "hourly_activity": [
-            {"hour": hour, "event_count": count}
+            {
+                "hour": hour,
+                "event_count": count,
+            }
             for hour, count in sorted(hourly_counts.items())
-        ]
+        ],
     }
-

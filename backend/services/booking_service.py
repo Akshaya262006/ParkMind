@@ -8,8 +8,13 @@ from models.parking_slot import ParkingSlot
 ACTIVE_STATUSES = ("CONFIRMED",)
 
 
-def create_booking(db: Session, payload):
-    # Lock the slot row to reduce the chance of concurrent reservations.
+def create_booking(
+    db: Session,
+    payload,
+    user_id: int,
+    customer_name: str,
+):
+    # Lock the slot row to reduce concurrent reservation conflicts.
     slot = (
         db.query(ParkingSlot)
         .filter(ParkingSlot.slot_id == payload.slot_id)
@@ -40,8 +45,9 @@ def create_booking(db: Session, payload):
         raise ValueError("This slot has an overlapping active booking")
 
     booking = Booking(
+        user_id=user_id,
         slot_id=payload.slot_id,
-        customer_name=payload.customer_name.strip(),
+        customer_name=customer_name.strip(),
         start_time=payload.start_time,
         end_time=payload.end_time,
         status="CONFIRMED",
@@ -58,17 +64,34 @@ def create_booking(db: Session, payload):
         raise
 
 
-def get_bookings(db: Session):
-    return db.query(Booking).order_by(Booking.id.desc()).all()
+def get_bookings(
+    db: Session,
+    user_id: int,
+    is_admin: bool = False,
+):
+    query = db.query(Booking)
+
+    # Drivers only see bookings linked to their own account.
+    # Admins can see every booking, including older unowned records.
+    if not is_admin:
+        query = query.filter(Booking.user_id == user_id)
+
+    return query.order_by(Booking.id.desc()).all()
 
 
-def cancel_booking(db: Session, booking_id: int):
-    booking = (
-        db.query(Booking)
-        .filter(Booking.id == booking_id)
-        .with_for_update()
-        .first()
-    )
+def cancel_booking(
+    db: Session,
+    booking_id: int,
+    user_id: int,
+    is_admin: bool = False,
+):
+    query = db.query(Booking).filter(Booking.id == booking_id)
+
+    # Return the same 404 for a missing booking and another user's booking.
+    if not is_admin:
+        query = query.filter(Booking.user_id == user_id)
+
+    booking = query.with_for_update().first()
 
     if booking is None:
         raise ValueError("Booking not found")

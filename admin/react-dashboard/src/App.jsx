@@ -27,9 +27,21 @@ import {
   ShieldCheck,
   Sparkles,
   MapPinned,
+  LogIn,
+  LogOut,
+  Mail,
+  UserRound,
+  LockKeyhole,
 } from "lucide-react";
 
 const API = "http://127.0.0.1:8000";
+
+function authHeaders(token, headers = {}) {
+  return {
+    ...headers,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 function StatCard({ label, value, icon: Icon, color, description }) {
   return (
@@ -73,6 +85,22 @@ function formatDateTime(value) {
 }
 
 export default function App() {
+  const [authToken, setAuthToken] = useState(
+    () => sessionStorage.getItem("parksense_access_token") || ""
+  );
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authChecking, setAuthChecking] = useState(
+    () => Boolean(sessionStorage.getItem("parksense_access_token"))
+  );
+  const [authMode, setAuthMode] = useState("login");
+  const [authForm, setAuthForm] = useState({
+    full_name: "",
+    email: "",
+    password: "",
+  });
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
   const [slots, setSlots] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [parkingEvents, setParkingEvents] = useState([]);
@@ -142,14 +170,140 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
   // and avoid repeatedly favoring slots with many recent state changes.
   const [preferredZone, setPreferredZone] = useState("any");
 
+  const logout = useCallback((message = "You have been signed out.") => {
+    sessionStorage.removeItem("parksense_access_token");
+    setAuthToken("");
+    setCurrentUser(null);
+    setBookings([]);
+    setBookingError("");
+    setNotice("");
+    setAuthMode("login");
+    setAuthForm((current) => ({ ...current, password: "" }));
+    setAuthError("");
+    setAuthMessage(message);
+  }, []);
+
+  // Validate any tab-scoped session when the app is opened or refreshed.
+  useEffect(() => {
+    const storedToken = sessionStorage.getItem("parksense_access_token");
+    if (!storedToken) {
+      setAuthChecking(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${API}/api/auth/me`, {
+          headers: authHeaders(storedToken, { Accept: "application/json" }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(result.detail || "Your session has expired. Please sign in again.");
+        }
+        if (cancelled) return;
+        setAuthToken(storedToken);
+        setCurrentUser(result);
+        setAuthError("");
+        setAuthMessage("");
+      } catch (err) {
+        if (cancelled) return;
+        sessionStorage.removeItem("parksense_access_token");
+        setAuthToken("");
+        setCurrentUser(null);
+        setAuthMessage(err.message || "Please sign in to continue.");
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleAuthSubmit(event) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthMessage("");
+
+    const isRegister = authMode === "register";
+    const payload = isRegister
+      ? {
+          full_name: authForm.full_name.trim(),
+          email: authForm.email.trim().toLowerCase(),
+          password: authForm.password,
+        }
+      : {
+          email: authForm.email.trim().toLowerCase(),
+          password: authForm.password,
+        };
+
+    try {
+      const response = await fetch(`${API}/api/auth/${isRegister ? "register" : "login"}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const detail = Array.isArray(result.detail)
+          ? result.detail.map((item) => item.msg || "Invalid input").join("; ")
+          : result.detail;
+        throw new Error(detail || (isRegister ? "Registration failed." : "Login failed."));
+      }
+
+      if (isRegister) {
+        setAuthMode("login");
+        setAuthForm((current) => ({ ...current, password: "" }));
+        setAuthMessage("Account created successfully. Sign in with your new credentials.");
+        return;
+      }
+
+      if (!result.access_token || !result.user) {
+        throw new Error("The login response did not include a token and user profile.");
+      }
+
+      sessionStorage.setItem("parksense_access_token", result.access_token);
+      setAuthToken(result.access_token);
+      setCurrentUser(result.user);
+      setAuthForm((current) => ({ ...current, password: "" }));
+      setAuthError("");
+      setAuthMessage("");
+      setNotice(`Welcome, ${result.user.full_name}.`);
+    } catch (err) {
+      setAuthError(err.message || "Authentication failed. Check the API server and try again.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  const isAdmin = String(currentUser?.role || "").toUpperCase() === "ADMIN";
+  const isDriver = String(currentUser?.role || "").toUpperCase() === "DRIVER";
+
   const refreshData = useCallback(async (showLoading = false) => {
+    if (!authToken) return;
     if (showLoading) setLoading(true);
 
     try {
       const [slotsResponse, statusResponse] = await Promise.all([
-        fetch(`${API}/api/parking/slots`),
-        fetch(`${API}/api/parking/status`),
+        fetch(`${API}/api/parking/slots`, {
+          headers: authHeaders(authToken, { Accept: "application/json" }),
+        }),
+        fetch(`${API}/api/parking/status`, {
+          headers: authHeaders(authToken, { Accept: "application/json" }),
+        }),
       ]);
+
+      if (slotsResponse.status === 401 || statusResponse.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
 
       if (!slotsResponse.ok || !statusResponse.ok) {
         throw new Error("Backend returned an unsuccessful response.");
@@ -179,16 +333,28 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
       // Bookings are loaded separately so a bookings endpoint issue does not
       // make the existing parking dashboard appear disconnected.
       try {
-        const bookingsResponse = await fetch(`${API}/api/bookings`);
-        if (!bookingsResponse.ok) {
-          throw new Error("Bookings API returned an unsuccessful response.");
+        if (!authToken) {
+          setBookings([]);
+          setBookingError("");
+        } else {
+          const bookingsResponse = await fetch(`${API}/api/bookings`, {
+            headers: authHeaders(authToken, { Accept: "application/json" }),
+          });
+          if (bookingsResponse.status === 401) {
+            logout("Your session expired. Please sign in again.");
+            return;
+          }
+          if (!bookingsResponse.ok) {
+            const errorBody = await bookingsResponse.json().catch(() => ({}));
+            throw new Error(errorBody.detail || "Bookings API returned an unsuccessful response.");
+          }
+          const bookingData = await bookingsResponse.json();
+          setBookings(bookingData);
+          setBookingError("");
         }
-        const bookingData = await bookingsResponse.json();
-        setBookings(bookingData);
-        setBookingError("");
       } catch (bookingFetchError) {
         console.error("Could not load bookings:", bookingFetchError);
-        setBookingError("Bookings could not be loaded. Check GET /api/bookings.");
+        setBookingError(bookingFetchError.message || "Bookings could not be loaded.");
       }
     } catch {
       setConnected(false);
@@ -198,13 +364,20 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authToken, logout]);
 
   const refreshEvents = useCallback(async () => {
     setEventsLoading(true);
 
     try {
-      const response = await fetch(`${API}/api/parking/events?limit=20`);
+      const response = await fetch(`${API}/api/parking/events?limit=20`, {
+        headers: authHeaders(authToken, { Accept: "application/json" }),
+      });
+
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
 
       if (!response.ok) {
         throw new Error("Could not load parking event history.");
@@ -218,13 +391,19 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     } finally {
       setEventsLoading(false);
     }
-  }, []);
+  }, [authToken, logout]);
 
   const refreshAnalytics = useCallback(async () => {
     setAnalyticsLoading(true);
 
     try {
-      const response = await fetch(`${API}/api/parking/analytics`);
+      const response = await fetch(`${API}/api/parking/analytics`, {
+        headers: authHeaders(authToken, { Accept: "application/json" }),
+      });
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
       if (!response.ok) {
         throw new Error("Could not load parking analytics.");
       }
@@ -237,13 +416,19 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     } finally {
       setAnalyticsLoading(false);
     }
-  }, []);
+  }, [authToken, logout]);
 
   const refreshHourlyActivity = useCallback(async () => {
     setHourlyActivityLoading(true);
 
     try {
-      const response = await fetch(`${API}/api/parking/analytics/hourly-activity`);
+      const response = await fetch(`${API}/api/parking/analytics/hourly-activity`, {
+        headers: authHeaders(authToken, { Accept: "application/json" }),
+      });
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
       if (!response.ok) {
         throw new Error("Could not load hourly activity analytics.");
       }
@@ -263,9 +448,11 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     } finally {
       setHourlyActivityLoading(false);
     }
-  }, []);
+  }, [authToken, logout]);
 
   useEffect(() => {
+    if (authChecking || !authToken || !currentUser) return undefined;
+
     refreshData(true);
     refreshEvents();
     refreshAnalytics();
@@ -279,9 +466,20 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [refreshData, refreshEvents, refreshAnalytics, refreshHourlyActivity]);
+  }, [authChecking, authToken, currentUser, refreshData, refreshEvents, refreshAnalytics, refreshHourlyActivity]);
 
   async function sendDemoEvent(slot) {
+    // UI guard only; FastAPI independently enforces the ADMIN role.
+    if (String(currentUser?.role || "").toUpperCase() !== "ADMIN") {
+      setError("Only an administrator can simulate parking status changes.");
+      return;
+    }
+
+    if (!authToken) {
+      logout("Please sign in again to continue.");
+      return;
+    }
+
     const nextStatus =
       slot.status === "OCCUPIED" ? "VACANT" : "OCCUPIED";
 
@@ -292,17 +490,26 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     try {
       const response = await fetch(`${API}/api/parking/demo/sensor-event`, {
         method: "POST",
-        headers: {
+        headers: authHeaders(authToken, {
           "Content-Type": "application/json",
           Accept: "application/json",
-        },
+        }),
         body: JSON.stringify({
           slot_id: slot.slot_id,
           status: nextStatus,
         }),
       });
 
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
+
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
+
+      if (response.status === 403) {
+        throw new Error("Only an administrator can simulate parking status changes.");
+      }
 
       if (!response.ok) {
         throw new Error(result.detail || "Could not update the slot.");
@@ -330,6 +537,14 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     setError("");
     setNotice("");
 
+    if (!authToken || !currentUser) {
+      setBookingError("Please sign in before creating a booking.");
+      return;
+    }
+    if (!isDriver) {
+      setBookingError("Only driver accounts can create bookings.");
+      return;
+    }
     if (!bookingForm.slot_id) {
       setBookingError("No vacant parking slot is available to book.");
       return;
@@ -339,11 +554,11 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     const endDate = new Date(bookingForm.end_time);
 
     if (
-      !bookingForm.customer_name.trim() ||
+      !currentUser.full_name?.trim() ||
       Number.isNaN(startDate.getTime()) ||
       Number.isNaN(endDate.getTime())
     ) {
-      setBookingError("Enter a customer name and valid start/end times.");
+      setBookingError("Your profile name or the start/end time is invalid.");
       return;
     }
 
@@ -361,13 +576,13 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     try {
       const response = await fetch(`${API}/api/bookings`, {
         method: "POST",
-        headers: {
+        headers: authHeaders(authToken, {
           "Content-Type": "application/json",
           Accept: "application/json",
-        },
+        }),
         body: JSON.stringify({
           slot_id: bookingForm.slot_id,
-          customer_name: bookingForm.customer_name.trim(),
+          customer_name: currentUser.full_name,
           // ISO strings include a timezone (Z), as required by the backend.
           start_time: startDate.toISOString(),
           end_time: endDate.toISOString(),
@@ -375,6 +590,10 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
       });
 
       const result = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
       if (!response.ok) {
         throw new Error(result.detail || "Could not create the booking.");
       }
@@ -407,9 +626,13 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     try {
       const response = await fetch(`${API}/api/bookings/${booking.id}/cancel`, {
         method: "PATCH",
-        headers: { Accept: "application/json" },
+        headers: authHeaders(authToken, { Accept: "application/json" }),
       });
       const result = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
       if (!response.ok) {
         throw new Error(result.detail || "Could not cancel the booking.");
       }
@@ -454,10 +677,10 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     try {
       const response = await fetch(`${API}/api/ml/predict`, {
         method: "POST",
-        headers: {
+        headers: authHeaders(authToken, {
           "Content-Type": "application/json",
           Accept: "application/json",
-        },
+        }),
         body: JSON.stringify({
           hour: Number(mlInput.hour),
           day_of_week: dayOfWeek,
@@ -467,6 +690,10 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
         }),
       });
       const result = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
       if (!response.ok) {
         throw new Error(result.detail || "ML prediction request failed.");
       }
@@ -504,10 +731,10 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     try {
       const response = await fetch(`${API}/api/ml/predict-slot`, {
         method: "POST",
-        headers: {
+        headers: authHeaders(authToken, {
           "Content-Type": "application/json",
           Accept: "application/json",
-        },
+        }),
         body: JSON.stringify({
           hour,
           day_of_week: dayOfWeek,
@@ -518,6 +745,10 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
       });
 
       const result = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        logout("Your session expired. Please sign in again.");
+        return;
+      }
       if (!response.ok) {
         throw new Error(result.detail || "Slot prediction request failed.");
       }
@@ -628,6 +859,86 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
       ? Math.round((summary.occupied / summary.total) * 100)
       : 0;
 
+  if (authChecking) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, background: "#f1f5f9", color: "#0f172a", fontFamily: "Inter, system-ui, sans-serif" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 24, borderRadius: 16, background: "#ffffff", boxShadow: "0 20px 60px rgba(15,23,42,0.08)" }}>
+          <LoaderCircle className="spin" size={22} />
+          <span>Checking your PARKSENSE session…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authToken || !currentUser) {
+    return (
+      <div className="parksense-auth-page" style={{ minHeight: "100vh", display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(320px, 460px)", background: "#f1f5f9", color: "#0f172a", fontFamily: "Inter, system-ui, sans-serif" }}>
+        <style>{`
+          @media (max-width: 820px) {
+            .parksense-auth-page { grid-template-columns: minmax(0, 1fr) !important; }
+            .parksense-auth-hero { padding: 32px 24px !important; }
+            .parksense-auth-title { font-size: 2.5rem !important; }
+            .parksense-auth-form-panel { padding: 22px !important; }
+          }
+        `}</style>
+        <section className="parksense-auth-hero" style={{ display: "flex", flexDirection: "column", justifyContent: "center", padding: "clamp(28px, 7vw, 88px)", background: "linear-gradient(145deg, #0b1730 0%, #142d4d 55%, #0f766e 130%)", color: "#ffffff" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 56 }}>
+            <span style={{ width: 54, height: 54, display: "grid", placeItems: "center", background: "rgba(45,212,191,0.16)", color: "#5eead4", border: "1px solid rgba(94,234,212,0.3)", borderRadius: 16 }}><ParkingCircle size={30} /></span>
+            <div><div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "0.12em" }}>PARKSENSE</div><div style={{ marginTop: 4, fontSize: 11, letterSpacing: "0.22em", color: "#a7f3d0" }}>SMART PARKING MANAGEMENT</div></div>
+          </div>
+          <p style={{ margin: "0 0 12px", color: "#5eead4", fontSize: 12, fontWeight: 700, letterSpacing: "0.18em" }}>SECURE ACCESS</p>
+          <h1 className="parksense-auth-title" style={{ maxWidth: 680, margin: "0 0 20px", fontSize: "clamp(2.3rem, 5vw, 4.4rem)", lineHeight: 1.05, letterSpacing: "-0.04em" }}>Smarter parking starts with a clearer view.</h1>
+          <p style={{ maxWidth: 570, margin: 0, color: "#cbd5e1", fontSize: 17, lineHeight: 1.8 }}>Sign in to view parking availability, manage your bookings, explore explainable recommendations, and review demo analytics.</p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 34 }}>
+            {["Live slot overview", "Booking history", "Explainable recommendations", "Demo analytics"].map((item) => (
+              <span key={item} style={{ padding: "9px 12px", borderRadius: 999, border: "1px solid rgba(203,213,225,0.22)", color: "#e2e8f0", background: "rgba(255,255,255,0.05)", fontSize: 12 }}>{item}</span>
+            ))}
+          </div>
+        </section>
+
+        <section className="parksense-auth-form-panel" style={{ display: "grid", placeItems: "center", padding: "clamp(20px, 4vw, 52px)" }}>
+          <div style={{ boxSizing: "border-box", width: "100%", maxWidth: 420, padding: "clamp(24px, 4vw, 38px)", border: "1px solid #e2e8f0", borderRadius: 22, background: "#ffffff", boxShadow: "0 24px 70px rgba(15,23,42,0.10)" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", color: "#0f766e", fontSize: 12, fontWeight: 800, letterSpacing: "0.14em" }}><LockKeyhole size={15} /> ACCOUNT ACCESS</div>
+            <h2 style={{ margin: "16px 0 8px", fontSize: 29, letterSpacing: "-0.03em" }}>{authMode === "login" ? "Welcome back" : "Create your account"}</h2>
+            <p style={{ margin: "0 0 24px", color: "#64748b", fontSize: 14, lineHeight: 1.6 }}>{authMode === "login" ? "Sign in with your PARKSENSE driver or administrator account." : "Register a driver account to book and manage your own parking reservations."}</p>
+
+            {authMessage && <div role="status" style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "#ecfdf5", border: "1px solid #a7f3d0", color: "#065f46", fontSize: 13 }}>{authMessage}</div>}
+            {authError && <div role="alert" style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", fontSize: 13 }}>{authError}</div>}
+
+            <form onSubmit={handleAuthSubmit} style={{ display: "grid", gap: 16 }}>
+              {authMode === "register" && (
+                <label style={{ display: "grid", gap: 7, color: "#334155", fontSize: 13, fontWeight: 650 }}>
+                  Full name
+                  <span style={{ position: "relative", display: "block" }}><UserRound size={17} style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }} /><input autoComplete="name" value={authForm.full_name} onChange={(event) => setAuthForm((current) => ({ ...current, full_name: event.target.value }))} minLength={2} maxLength={100} required placeholder="Your full name" style={{ boxSizing: "border-box", width: "100%", height: 46, border: "1px solid #cbd5e1", borderRadius: 10, padding: "0 12px 0 40px", color: "#0f172a", background: "#fff", font: "inherit", fontWeight: 400 }} /></span>
+                </label>
+              )}
+              <label style={{ display: "grid", gap: 7, color: "#334155", fontSize: 13, fontWeight: 650 }}>
+                Email address
+                <span style={{ position: "relative", display: "block" }}><Mail size={17} style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }} /><input type="email" autoComplete="email" value={authForm.email} onChange={(event) => setAuthForm((current) => ({ ...current, email: event.target.value }))} minLength={5} maxLength={255} required placeholder="you@example.com" style={{ boxSizing: "border-box", width: "100%", height: 46, border: "1px solid #cbd5e1", borderRadius: 10, padding: "0 12px 0 40px", color: "#0f172a", background: "#fff", font: "inherit", fontWeight: 400 }} /></span>
+              </label>
+              <label style={{ display: "grid", gap: 7, color: "#334155", fontSize: 13, fontWeight: 650 }}>
+                Password
+                <span style={{ position: "relative", display: "block" }}><LockKeyhole size={17} style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }} /><input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} value={authForm.password} onChange={(event) => setAuthForm((current) => ({ ...current, password: event.target.value }))} minLength={authMode === "register" ? 8 : 1} maxLength={72} required placeholder={authMode === "login" ? "Enter your password" : "At least 8 characters"} style={{ boxSizing: "border-box", width: "100%", height: 46, border: "1px solid #cbd5e1", borderRadius: 10, padding: "0 12px 0 40px", color: "#0f172a", background: "#fff", font: "inherit", fontWeight: 400 }} /></span>
+              </label>
+              <button type="submit" disabled={authBusy} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9, height: 47, marginTop: 4, border: 0, borderRadius: 10, background: authBusy ? "#64748b" : "#0f766e", color: "#fff", fontSize: 14, fontWeight: 750, cursor: authBusy ? "wait" : "pointer" }}>
+                {authBusy ? <LoaderCircle size={17} className="spin" /> : authMode === "login" ? <LogIn size={17} /> : <UserRound size={17} />}
+                {authBusy ? "Please wait…" : authMode === "login" ? "Sign in" : "Create driver account"}
+              </button>
+            </form>
+
+            <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid #e2e8f0", textAlign: "center", color: "#64748b", fontSize: 13 }}>
+              {authMode === "login" ? "New to PARKSENSE?" : "Already have an account?"}{" "}
+              <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); setAuthMessage(""); }} style={{ border: 0, padding: 0, background: "transparent", color: "#0f766e", fontWeight: 750, cursor: "pointer", fontSize: 13 }}>
+                {authMode === "login" ? "Create an account" : "Sign in instead"}
+              </button>
+            </div>
+            <p style={{ margin: "18px 0 0", color: "#94a3b8", fontSize: 11, lineHeight: 1.55, textAlign: "center" }}>Public registration creates DRIVER accounts only. Administrator accounts must be provisioned separately.</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -713,6 +1024,22 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
           </div>
 
           <div className="topbar-actions">
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 8 }}>
+              <div style={{ textAlign: "right", minWidth: 0 }}>
+                <strong style={{ display: "block", fontSize: 13 }}>{currentUser?.full_name}</strong>
+                <span style={{ color: "#64748b", fontSize: 11, letterSpacing: "0.08em" }}>
+                  {currentUser?.role}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => logout()}
+                title="Sign out of PARKSENSE"
+              >
+                <LogOut size={15} /> Sign out
+              </button>
+            </div>
             <span className={`connection-pill ${connected ? "online" : ""}`}>
               {connected ? <Wifi size={16} /> : <WifiOff size={16} />}
               {connected ? "Connected" : "Offline"}
@@ -977,14 +1304,18 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
                           <h3>Selected slot: {slot.slot_id}</h3>
                           <p>Zone {slot.zone_id} · {slot.length_m} m × {slot.width_m} m · Coordinates ({slot.x_m}, {slot.y_m}) · Orientation {slot.orientation}°</p>
                         </div>
-                        <button
-                          className={`slot-action selected-slot-action ${currentClass}`}
-                          onClick={() => sendDemoEvent(slot)}
-                          disabled={!connected || busy}
-                        >
-                          {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={15} />}
-                          {busy ? "Updating..." : slot.status === "OCCUPIED" ? "Simulate vehicle departure" : slot.status === "RESERVED" ? "Slot reserved" : "Simulate vehicle arrival"}
-                        </button>
+                        {isAdmin ? (
+                          <button
+                            className={`slot-action selected-slot-action ${currentClass}`}
+                            onClick={() => sendDemoEvent(slot)}
+                            disabled={!connected || busy}
+                          >
+                            {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={15} />}
+                            {busy ? "Updating..." : slot.status === "OCCUPIED" ? "Simulate vehicle departure" : slot.status === "RESERVED" ? "Slot reserved" : "Simulate vehicle arrival"}
+                          </button>
+                        ) : (
+                          <span className="booking-inline-help">Slot controls are admin-only.</span>
+                        )}
                       </div>
                     );
                   })}
@@ -1013,14 +1344,18 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
                         <span><small>Width</small>{slot.width_m} m</span>
                         <span><small>Orientation</small>{slot.orientation}°</span>
                       </div>
-                      <button
-                        className={`slot-action ${currentClass}`}
-                        onClick={(event) => { event.stopPropagation(); sendDemoEvent(slot); }}
-                        disabled={!connected || busy || slot.status === "RESERVED"}
-                      >
-                        {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={15} />}
-                        {busy ? "Updating..." : slot.status === "OCCUPIED" ? "Simulate vehicle departure" : slot.status === "RESERVED" ? "Reserved — no demo toggle" : "Simulate vehicle arrival"}
-                      </button>
+                      {isAdmin ? (
+                        <button
+                          className={`slot-action ${currentClass}`}
+                          onClick={(event) => { event.stopPropagation(); sendDemoEvent(slot); }}
+                          disabled={!connected || busy || slot.status === "RESERVED"}
+                        >
+                          {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={15} />}
+                          {busy ? "Updating..." : slot.status === "OCCUPIED" ? "Simulate vehicle departure" : slot.status === "RESERVED" ? "Reserved — no demo toggle" : "Simulate vehicle arrival"}
+                        </button>
+                      ) : (
+                        <p className="booking-inline-help">Read-only for driver accounts.</p>
+                      )}
                     </article>
                   );
                 })}
@@ -1175,6 +1510,7 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
             <span className="slot-count">{bookings.length} bookings</span>
           </div>
 
+          {isDriver && (
           <form className="booking-form" onSubmit={createBooking}>
             <div className="booking-form-heading">
               <h3>Create a booking</h3>
@@ -1204,13 +1540,17 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
                 <span>Customer name</span>
                 <input
                   type="text"
-                  value={bookingForm.customer_name}
-                  onChange={(event) => updateBookingField("customer_name", event.target.value)}
-                  placeholder="Enter customer name"
+                  value={currentUser?.full_name || ""}
+                  readOnly
+                  aria-describedby="booking-profile-name-help"
+                  placeholder="Your profile name"
                   maxLength={100}
                   required
                   disabled={bookingBusy}
                 />
+                <small id="booking-profile-name-help" className="booking-inline-help">
+                  Filled from your authenticated profile.
+                </small>
               </label>
               <label className="booking-field">
                 <span>Start time</span>
@@ -1258,6 +1598,11 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
               </button>
             </div>
           </form>
+          )}
+
+          {!isDriver && !isAdmin && (
+            <p className="booking-inline-help">Your account role does not permit creating bookings.</p>
+          )}
 
           <div className="bookings-list-heading">
             <div>

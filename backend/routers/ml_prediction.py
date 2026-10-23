@@ -4,10 +4,19 @@ from math import sin, cos, pi
 
 import joblib
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/ml", tags=["Machine Learning"])
+from core.auth_dependencies import get_current_user
+
+
+# Both ML endpoints require a valid authenticated user.
+# Drivers and admins may use predictions.
+router = APIRouter(
+    prefix="/ml",
+    tags=["Machine Learning"],
+    dependencies=[Depends(get_current_user)],
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -71,7 +80,9 @@ def predict_occupancy(request: PredictionRequest):
 
         return {
             "predicted_next_hour_occupancy": round(prediction, 4),
-            "predicted_occupancy_percent": round(prediction * 100, 2),
+            "predicted_occupancy_percent": round(
+                prediction * 100, 2
+            ),
             "model": "RandomForestRegressor",
             "data_mode": "SYNTHETIC_DEMO",
             "disclaimer": (
@@ -109,7 +120,9 @@ def predict_slot(request: SlotPredictionRequest):
         }
 
         for slot in ["A1", "A2", "A3", "A4", "A5"]:
-            row[f"slot_id_{slot}"] = int(request.slot_id == slot)
+            row[f"slot_id_{slot}"] = int(
+                request.slot_id == slot
+            )
 
         input_data = pd.DataFrame([row], columns=features)
 
@@ -118,7 +131,9 @@ def predict_slot(request: SlotPredictionRequest):
         classes = list(model.classes_)
 
         occupied_index = classes.index(1)
-        occupied_probability = float(probabilities[occupied_index])
+        occupied_probability = float(
+            probabilities[occupied_index]
+        )
 
         return {
             "slot_id": request.slot_id,

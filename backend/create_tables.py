@@ -5,6 +5,7 @@ from models.parking_zone import ParkingZone
 from models.parking_slot import ParkingSlot
 from models.booking import Booking
 from models.parking_event import ParkingEvent
+from models.user import User
 
 Base.metadata.create_all(bind=engine)
 
