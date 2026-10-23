@@ -1,9 +1,10 @@
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.auth_dependencies import get_current_user
+from core.rate_limiter import limiter
 from core.security import create_access_token, hash_password, verify_password
 from database.connection import get_db
 from models.user import User
@@ -22,7 +23,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("5/minute")
 def register(
+    request: Request,
     payload: RegisterRequest,
     db: Session = Depends(get_db),
 ):
@@ -67,7 +70,9 @@ def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 def login(
+    request: Request,
     payload: LoginRequest,
     db: Session = Depends(get_db),
 ):
