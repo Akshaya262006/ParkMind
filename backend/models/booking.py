@@ -16,6 +16,12 @@ class Booking(Base):
         index=True,
     )
 
+    user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True,
+    )
     slot_id: Mapped[str] = mapped_column(
         String(20),
         ForeignKey("parking_slots.slot_id"),

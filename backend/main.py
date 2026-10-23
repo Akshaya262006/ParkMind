@@ -6,7 +6,7 @@ from routers.health import router as health_router
 from routers.parking import router as parking_router
 from routers.bookings import router as bookings_router
 from routers.ml_prediction import router as ml_router
-
+from routers.auth import router as auth_router
 app = FastAPI(
     title="PARKSENSE API",
     description="Smart Parking Management System",
@@ -39,3 +39,4 @@ app.include_router(health_router)
 app.include_router(parking_router, prefix="/api")
 app.include_router(bookings_router, prefix="/api")
 app.include_router(ml_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
