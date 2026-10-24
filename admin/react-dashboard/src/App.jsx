@@ -34,8 +34,7 @@ import {
   LockKeyhole,
 } from "lucide-react";
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-
+const API = (import.meta.env.VITE_API_URL || "https://parkmind-p9us.onrender.com").replace(/\/$/, "");
 
 function authHeaders(token, headers = {}) {
   return {
@@ -360,7 +359,7 @@ const [slotMlLoading, setSlotMlLoading] = useState(false);
     } catch {
       setConnected(false);
       setError(
-        "Cannot connect to PARKSENSE API. Check that FastAPI is running on port 8000."
+        "Cannot connect to the PARKSENSE API. Check VITE_API_URL, backend availability, and the backend CORS settings."
       );
     } finally {
       setLoading(false);
