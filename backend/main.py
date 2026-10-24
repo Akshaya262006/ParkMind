@@ -1,10 +1,20 @@
+﻿from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from core.rate_limiter import limiter
+from database.base import Base
+from database.connection import engine
+
+# Register SQLAlchemy models before create_all()
+from models.user import User
+from models.parking_zone import ParkingZone
+from models.parking_slot import ParkingSlot
+from models.booking import Booking
+from models.parking_event import ParkingEvent
 
 from routers.health import router as health_router
 from routers.auth import router as auth_router
@@ -13,28 +23,24 @@ from routers.bookings import router as bookings_router
 from routers.ml_prediction import router as ml_router
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
 app = FastAPI(
     title="PARKSENSE API",
     description="Smart Parking Management System Backend",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
-
-# --------------------------------------------------
-# RATE LIMITING
-# --------------------------------------------------
-
 app.state.limiter = limiter
-
 app.add_exception_handler(
     RateLimitExceeded,
     _rate_limit_exceeded_handler,
 )
-
-
-# --------------------------------------------------
-# CORS CONFIGURATION
-# --------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,10 +54,6 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------
-# ROOT ENDPOINT
-# --------------------------------------------------
-
 @app.get("/")
 def root():
     return {
@@ -61,33 +63,8 @@ def root():
     }
 
 
-# --------------------------------------------------
-# ROUTER REGISTRATION
-# --------------------------------------------------
-
-# Health endpoint
 app.include_router(health_router)
-
-# Authentication: register, login, profile
-app.include_router(
-    auth_router,
-    prefix="/api",
-)
-
-# Parking: availability, status, events, analytics
-app.include_router(
-    parking_router,
-    prefix="/api",
-)
-
-# Bookings: create, list, cancel
-app.include_router(
-    bookings_router,
-    prefix="/api",
-)
-
-# ML: occupancy and individual-slot predictions
-app.include_router(
-    ml_router,
-    prefix="/api",
-)
+app.include_router(auth_router, prefix="/api")
+app.include_router(parking_router, prefix="/api")
+app.include_router(bookings_router, prefix="/api")
+app.include_router(ml_router, prefix="/api")
