@@ -22,7 +22,7 @@ from routers.parking import router as parking_router
 from routers.bookings import router as bookings_router
 from routers.ml_prediction import router as ml_router
 
-
+import os
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -42,16 +42,28 @@ app.add_exception_handler(
     _rate_limit_exceeded_handler,
 )
 
+
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://parksense-frontend-react-d-git-94695e-kvspsathwik2007s-projects.vercel.app",
+]
+
+extra_origins = os.getenv("FRONTEND_ORIGINS", "")
+allowed_origins.extend(
+    origin.strip().rstrip("/")
+    for origin in extra_origins.split(",")
+    if origin.strip()
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 @app.get("/")
