@@ -1,0 +1,16 @@
+
+fastapi
+uvicorn[standard]
+SQLAlchemy
+psycopg2-binary
+pydantic
+pydantic-settings
+python-dotenv
+bcrypt
+PyJWT
+slowapi
+python-multipart
+numpy
+pandas
+joblib
+scikit-learn
