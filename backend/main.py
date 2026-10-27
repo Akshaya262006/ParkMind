@@ -46,6 +46,7 @@ app.add_exception_handler(
 allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://parksense-frontend-react-dashboard.vercel.app",
     "https://parksense-frontend-react-d-git-94695e-kvspsathwik2007s-projects.vercel.app",
 ]
 
